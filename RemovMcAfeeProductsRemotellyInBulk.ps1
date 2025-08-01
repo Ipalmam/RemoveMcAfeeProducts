@@ -1,5 +1,22 @@
 $list = Get-Content -Path ./list.txt
 $DNSExist = Resolve-DnsName -Name $remoteComputer -ErrorAction SilentlyContinue
+function Wait-ForProcessExit {
+    param (
+        [string]$ComputerName,
+        [string[]]$ProcessNames,
+        [int]$PollInterval = 10
+    )
+    do {
+        $running = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+            param($names)
+            Get-Process | Where-Object { $names -contains $_.Name }
+        } -ArgumentList $ProcessNames
+        if ($running) {
+            Write-Host "Waiting for McAfee uninstaller processes to complete on $ComputerName..."
+            Start-Sleep -Seconds $PollInterval
+        }
+    } while ($running)
+}
 foreach($remoteComputer in $list){
     if($DNSExist){
         $HostAvailable = Test-NetConnection -ComputerName $remoteComputer -InformationLevel Quiet
@@ -15,6 +32,7 @@ foreach($remoteComputer in $list){
                 $atp = Get-CimInstance -ClassName Win32_Product | Where-Object { $_.Name -like "*Adaptive Threat Protection*" }
                 if ($atp) {
                     Invoke-CimMethod -InputObject $atp -MethodName "Uninstall"
+                    Wait-ForProcessExit -ComputerName $remoteComputer -ProcessNames @("msiexec")
                     }
                 }
             }
@@ -26,6 +44,7 @@ foreach($remoteComputer in $list){
                 $exeArgs = "/FORCEUNINSTALL /SILENT"
                 $psexecArgs = "\\$remoteComputer -s $exePath $exeArgs"
                 Start-Process -FilePath $psexecPath -ArgumentList $psexecArgs -Wait
+                Wait-ForProcessExit -ComputerName $remoteComputer -ProcessNames @("msiexec", "FrmInst", "McTray", "macompatsvc", "macmnsvc")
             }
             # Uninstall McAfee DLP
             $MCDLP = Invoke-Command -ComputerName $remoteComputer -ScriptBlock { Get-CimInstance -ClassName Win32_Product | Where-Object { $_.Name -like "*McAfee*DLP*" }}
@@ -48,6 +67,7 @@ foreach($remoteComputer in $list){
             $psexecCmd = "$psexecPath \\$remoteComputer -s -i cmd /c $remoteCmd"
             #Step 3: Execute PsExec remotely
             Start-Process -FilePath "cmd.exe" -ArgumentList "/c $psexecCmd" -WindowStyle Hidden
+            Wait-ForProcessExit -ComputerName $remoteComputer -ProcessNames @("msiexec", "FrmInst", "McTray", "macompatsvc", "macmnsvc")
             }
             # Uninstall other McAfee Products
             $MCapps = Invoke-Command -ComputerName $remoteComputer -ScriptBlock { Get-CimInstance -ClassName Win32_Product | Where-Object { $_.Name -like "*McAfee*"}}
@@ -69,10 +89,4 @@ foreach($remoteComputer in $list){
     }else{
         Add-Content -Path ./log.txt -Value "DNS resolution failed for $remoteComputer. Please check the hostname or network connectivity."
     }
-         
-    
-    
-    
-    
-    
 }
